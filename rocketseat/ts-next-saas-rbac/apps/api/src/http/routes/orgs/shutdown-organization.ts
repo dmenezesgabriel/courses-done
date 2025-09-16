@@ -1,0 +1,64 @@
+import { auth } from "@/http/middlewares/auth";
+import { prisma } from "@/lib/prisma";
+import type { FastifyInstance } from "fastify";
+import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import z from "zod";
+import { BadRequestError } from "../_error/bad-request-error";
+import { defineAbilityFor, organizationSchema, userSchema } from "@saas/auth";
+import { UnauthorizedError } from "../_error/unauthorized-error";
+import { getUserPermissions } from "@/utils/get-user-permissions";
+
+export async function shutdownOrganization(app: FastifyInstance) {
+  app
+    .withTypeProvider<ZodTypeProvider>()
+    .register(auth)
+    .delete(
+      "/organizations/:slug",
+      {
+        schema: {
+          tags: ["organizations"],
+          summary: "Shutdown organization details",
+          security: [{ bearerAuth: [] }],
+          params: z.object({ slug: z.string() }),
+          response: {
+            204: z.null(),
+          },
+        },
+      },
+      async (request, reply) => {
+        const { slug } = request.params;
+
+        const userId = await request.getCurrentUserId();
+        const { membership, organization } =
+          await request.getUserMembership(slug);
+
+        const authOrganization = organizationSchema.parse({
+          id: organization.id,
+          ownerId: organization.ownerId,
+        });
+
+        const { cannot } = getUserPermissions(userId, membership.role);
+
+        if (cannot("delete", authOrganization)) {
+          throw new UnauthorizedError(
+            "You are not allowed to shutdown this organization."
+          );
+        }
+
+        // TODO delete cascade
+        await prisma.member.deleteMany({
+          where: {
+            organizationId: organization.id,
+          },
+        });
+
+        await prisma.organization.delete({
+          where: {
+            id: organization.id,
+          },
+        });
+
+        return reply.status(204).send();
+      }
+    );
+}
